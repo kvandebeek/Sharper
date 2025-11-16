@@ -16,12 +16,15 @@ class MainWindow(QMainWindow):
     def __init__(self, pipeline):
         super().__init__()
         self.pipeline = pipeline
-        self.base_rgb = None  # uint8, H×W×3
+        self.base_rgb = None
         self.live_updates_enabled = False
 
         self._build_ui()
-        self.setWindowTitle("Planetary Enhancer")
+        self.setWindowTitle("Sharper")
 
+    # ------------------------------------------------------------
+    # UI
+    # ------------------------------------------------------------
     def _build_ui(self):
         central = QWidget()
         layout = QHBoxLayout(central)
@@ -46,13 +49,19 @@ class MainWindow(QMainWindow):
         save_btn = QPushButton("Save")
         open_btn.clicked.connect(self._open_image)
         save_btn.clicked.connect(self._save_result)
+
         tb.addWidget(open_btn)
         tb.addWidget(save_btn)
 
-    # ------------------ image loading ------------------
+    # ------------------------------------------------------------
+    # IMAGE LOADING
+    # ------------------------------------------------------------
     def _open_image(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "Open Image", "", "Images (*.png *.jpg *.jpeg *.tif *.tiff)"
+            self,
+            "Open Image",
+            "",
+            "Images (*.png *.jpg *.jpeg *.tif *.tiff)"
         )
         if not path:
             return
@@ -62,48 +71,87 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Error", "Could not load image.")
             return
 
+        print("RAW LOAD:", arr.shape, arr.dtype, arr.min(), arr.max())
+
+        # --------------------------------------------------------
+        # 1) Handle 16-bit inputs
+        # --------------------------------------------------------
+        if arr.dtype == np.uint16:
+            maxv = float(arr.max()) if arr.max() > 0 else 1.0
+            arr = arr.astype(np.float32) / maxv  # now 0..1
+
+        # --------------------------------------------------------
+        # 2) Handle fake RGB mono TIFFs
+        # --------------------------------------------------------
+        if arr.ndim == 3 and arr.shape[2] == 3:
+            if np.allclose(arr[..., 0], arr[..., 1], atol=1e-6) and \
+               np.allclose(arr[..., 0], arr[..., 2], atol=1e-6):
+                # true grayscale disguised as RGB
+                gray = arr[..., 0]
+                arr = np.stack([gray, gray, gray], axis=2)
+
+        # --------------------------------------------------------
+        # 3) Convert real grayscale to RGB
+        # --------------------------------------------------------
+        if arr.ndim == 2:
+            m = float(arr.max()) if arr.max() > 0 else 1.0
+            arr = arr.astype(np.float32) / m
+            arr = np.stack([arr, arr, arr], axis=2)
+
+        # --------------------------------------------------------
+        # 4) Normalize everything to uint8 RGB
+        # --------------------------------------------------------
+        if arr.max() <= 1.5:
+            arr = (arr * 255.0).clip(0, 255).astype(np.uint8)
+        else:
+            arr = arr.astype(np.uint8)
+
+        # strip alpha channel if any
         if arr.ndim == 3 and arr.shape[2] == 4:
             arr = arr[..., :3]
 
-        if arr.ndim == 2:
-            arr = arr.astype(np.float32)
-            m = float(arr.max()) or 1.0
-            arr = (arr / m * 255.0).clip(0, 255).astype(np.uint8)
-            arr = np.stack([arr, arr, arr], axis=2)
-
         arr = cv2.cvtColor(arr, cv2.COLOR_BGR2RGB)
-        self.base_rgb = arr.astype(np.uint8)
 
-        self.preview.update_image(self.base_rgb)
+        self.base_rgb = arr.copy()
+        self.preview.update_image(arr)
         self.live_updates_enabled = True
+
         self.status_label.setText(f"Loaded: {path}")
 
-    # ------------------ live preview ------------------
+    # ------------------------------------------------------------
+    # LIVE PREVIEW
+    # ------------------------------------------------------------
     def _rerun_partial(self):
         if not self.live_updates_enabled or self.base_rgb is None:
             return
+
         proc = self.pipeline.apply_all(self.base_rgb)
         out = (proc * 255.0).clip(0, 255).astype(np.uint8)
         self.preview.update_image(out)
-        self.status_label.setText("Live update")
 
-    # ------------------ reset all controls ------------------
+    # ------------------------------------------------------------
+    # RESET
+    # ------------------------------------------------------------
     def _reset_all(self):
         if not self.live_updates_enabled:
             return
         self.controls.reset_to_defaults()
         if self.base_rgb is not None:
             self.preview.update_image(self.base_rgb)
-        self.status_label.setText("Reset")
 
-    # ------------------ save result ------------------
+    # ------------------------------------------------------------
+    # SAVE
+    # ------------------------------------------------------------
     def _save_result(self):
         if self.base_rgb is None:
             QMessageBox.warning(self, "Error", "No image loaded.")
             return
 
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save Output", "", "PNG Files (*.png)"
+            self,
+            "Save Output",
+            "",
+            "PNG Files (*.png)"
         )
         if not path:
             return
@@ -112,6 +160,7 @@ class MainWindow(QMainWindow):
         out = (proc * 255.0).clip(0, 255).astype(np.uint8)
         out_bgr = cv2.cvtColor(out, cv2.COLOR_RGB2BGR)
         cv2.imwrite(path, out_bgr)
+
         self.status_label.setText(f"Saved: {path}")
 
 
