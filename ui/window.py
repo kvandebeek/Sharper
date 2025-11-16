@@ -4,7 +4,7 @@ import numpy as np
 
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QLabel,
-    QFileDialog, QMessageBox, QApplication, QToolBar, QPushButton
+    QFileDialog, QMessageBox, QApplication, QToolBar, QPushButton, QProgressBar
 )
 from PySide6.QtCore import Qt, QTimer
 
@@ -44,8 +44,14 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.controls, stretch=1)
         self.setCentralWidget(central)
 
+        # Status and progress
         self.status_label = QLabel("")
-        self.statusBar().addPermanentWidget(self.status_label)
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+
+        self.statusBar().addPermanentWidget(self.status_label, 2)
+        self.statusBar().addPermanentWidget(self.progress_bar, 1)
 
         tb = QToolBar("Main", self)
         self.addToolBar(Qt.TopToolBarArea, tb)
@@ -78,31 +84,31 @@ class MainWindow(QMainWindow):
 
         print("RAW LOAD:", arr.shape, arr.dtype, arr.min(), arr.max())
 
-        # 1) Handle 16-bit inputs
+        # 1) 16-bit → normalize to 0..1
         if arr.dtype == np.uint16:
             maxv = float(arr.max()) if arr.max() > 0 else 1.0
-            arr = arr.astype(np.float32) / maxv  # now 0..1
+            arr = arr.astype(np.float32) / maxv
 
-        # 2) Handle fake RGB mono TIFFs
+        # 2) fake RGB mono → collapse to gray
         if arr.ndim == 3 and arr.shape[2] == 3:
             if np.allclose(arr[..., 0], arr[..., 1], atol=1e-6) and \
                np.allclose(arr[..., 0], arr[..., 2], atol=1e-6):
                 gray = arr[..., 0]
                 arr = np.stack([gray, gray, gray], axis=2)
 
-        # 3) Convert real grayscale to RGB
+        # 3) real mono 2D → stack to 3-ch
         if arr.ndim == 2:
             m = float(arr.max()) if arr.max() > 0 else 1.0
             arr = arr.astype(np.float32) / m
             arr = np.stack([arr, arr, arr], axis=2)
 
-        # 4) Normalize everything to uint8 RGB
+        # 4) normalize to uint8 RGB
         if arr.max() <= 1.5:
             arr = (arr * 255.0).clip(0, 255).astype(np.uint8)
         else:
             arr = arr.astype(np.uint8)
 
-        # strip alpha channel if any
+        # strip alpha
         if arr.ndim == 3 and arr.shape[2] == 4:
             arr = arr[..., :3]
 
@@ -111,6 +117,7 @@ class MainWindow(QMainWindow):
         self.base_rgb = arr.copy()
         self.preview.update_image(arr)
         self.live_updates_enabled = True
+        self.progress_bar.setValue(0)
         self.status_label.setText(f"Loaded: {path}")
 
     # ------------------------------------------------------------
@@ -120,14 +127,19 @@ class MainWindow(QMainWindow):
         """Called whenever a slider changes; start/restart debounce timer."""
         if not self.live_updates_enabled:
             return
-        # restart 225 ms timer
-        self.update_timer.start(225)
+        self.progress_bar.setValue(0)
+        self.status_label.setText("Processing…")
+        self.update_timer.start(300)  # 300 ms debounce
+
+    def _update_progress(self, percent, text):
+        self.progress_bar.setValue(int(percent))
+        self.status_label.setText(text)
 
     def _apply_update(self):
         """Actually run the pipeline and update preview."""
         if not self.live_updates_enabled or self.base_rgb is None:
             return
-        proc = self.pipeline.apply_all(self.base_rgb)
+        proc = self.pipeline.apply_all(self.base_rgb, self._update_progress)
         out = (proc * 255.0).clip(0, 255).astype(np.uint8)
         self.preview.update_image(out)
         self.status_label.setText("Live update")
@@ -141,6 +153,7 @@ class MainWindow(QMainWindow):
         self.controls.reset_to_defaults()
         if self.base_rgb is not None:
             self.preview.update_image(self.base_rgb)
+        self.progress_bar.setValue(0)
         self.status_label.setText("Reset")
 
     # ------------------------------------------------------------
@@ -160,11 +173,12 @@ class MainWindow(QMainWindow):
         if not path:
             return
 
-        proc = self.pipeline.apply_all(self.base_rgb)
+        proc = self.pipeline.apply_all(self.base_rgb, self._update_progress)
         out = (proc * 255.0).clip(0, 255).astype(np.uint8)
         out_bgr = cv2.cvtColor(out, cv2.COLOR_RGB2BGR)
         cv2.imwrite(path, out_bgr)
 
+        self.progress_bar.setValue(100)
         self.status_label.setText(f"Saved: {path}")
 
 
