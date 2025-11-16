@@ -1,0 +1,13 @@
+{
+    "preblur_sigma": 0.0,
+    "decon_iterations": 1,
+    "decon_psf_sigma": 0.1,
+    "wavelets": [0.0, 0.0, 0.0, 0.0, 0.0],
+    "detail_amount": 0.0,
+    "detail_radius": 1.0,
+    "denoise_strength": 0,
+    "denoise_radius": 1,
+    "final_gamma": 1.0,
+    "final_contrast": 1.0,
+    "final_brightness": 0.0
+}
