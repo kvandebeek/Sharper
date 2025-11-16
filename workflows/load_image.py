@@ -1,20 +1,16 @@
+import cv2
 from core.workflow_item import WorkflowItem
-from processing.loader import ImageLoader
 
 class LoadImage(WorkflowItem):
-    def __init__(self, path=None):
-        super().__init__("Load Image")
-        self.path = path
-        self.image = None
+    def __init__(self):
+        super().__init__("LoadImage")
+        self.filename = None
 
-    def set_path(self, path):
-        self.path = path
+    def set_file(self, filename):
+        self.filename = filename
+        self.mark_dirty()
 
-    def execute(self):
-        if not self.path:
-            print("No image path set")
-            return
-
-        loader = ImageLoader()
-        self.image = loader.load_one(self.path)
-        print(f"Loaded image: {self.path}")
+    def process(self, img_in, **params):
+        if not self.filename:
+            return None
+        return cv2.imread(self.filename, cv2.IMREAD_UNCHANGED)

@@ -186,6 +186,7 @@ class ControlsPanel(QWidget):
         self._update_wavelet_labels()
         self.params_changed.emit()
 
+
     # ---------- Detail tab ----------
     def _build_detail_tab(self):
         tab = QWidget()

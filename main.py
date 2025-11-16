@@ -1,8 +1,6 @@
-from core.app import App
-
-def main():
-    app = App()
-    app.run()
+from core.app import Pipeline
+from ui.window import start_qt
 
 if __name__ == "__main__":
-    main()
+    pipeline = Pipeline()
+    start_qt(pipeline)

@@ -3,10 +3,11 @@ import cv2
 import numpy as np
 
 from PySide6.QtWidgets import (
-    QMainWindow, QWidget, QHBoxLayout, QLabel,
-    QFileDialog, QMessageBox, QApplication, QToolBar, QPushButton, QProgressBar
+    QApplication, QMainWindow, QWidget, QHBoxLayout,
+    QLabel, QFileDialog, QMessageBox, QToolBar,
+    QPushButton, QProgressBar
 )
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt
 
 from ui.preview import PreviewWidget
 from ui.controls import ControlsPanel
@@ -19,162 +20,120 @@ class MainWindow(QMainWindow):
         self.base_rgb = None
         self.live_updates_enabled = False
 
-        # Debounce timer for live updates
-        self.update_timer = QTimer(self)
-        self.update_timer.setSingleShot(True)
-        self.update_timer.timeout.connect(self._apply_update)
-
         self._build_ui()
         self.setWindowTitle("Sharper")
 
-    # ------------------------------------------------------------
-    # UI
     # ------------------------------------------------------------
     def _build_ui(self):
         central = QWidget()
         layout = QHBoxLayout(central)
 
+        # PREVIEW
         self.preview = PreviewWidget()
+        self.preview.pixel_info.connect(self._update_pixel_info)
         layout.addWidget(self.preview, stretch=3)
 
+        # CONTROLS
         self.controls = ControlsPanel(self.pipeline)
         self.controls.params_changed.connect(self._rerun_partial)
         self.controls.reset_requested.connect(self._reset_all)
-
         layout.addWidget(self.controls, stretch=1)
+
         self.setCentralWidget(central)
 
-        # Status and progress
+        # STATUS BAR
         self.status_label = QLabel("")
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 100)
-        self.progress_bar.setValue(0)
-
         self.statusBar().addPermanentWidget(self.status_label, 2)
         self.statusBar().addPermanentWidget(self.progress_bar, 1)
 
-        tb = QToolBar("Main", self)
+        # TOOLBAR
+        tb = QToolBar()
         self.addToolBar(Qt.TopToolBarArea, tb)
 
         open_btn = QPushButton("Open")
         save_btn = QPushButton("Save")
         open_btn.clicked.connect(self._open_image)
         save_btn.clicked.connect(self._save_result)
-
         tb.addWidget(open_btn)
         tb.addWidget(save_btn)
 
     # ------------------------------------------------------------
-    # IMAGE LOADING
-    # ------------------------------------------------------------
     def _open_image(self):
         path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Open Image",
-            "",
-            "Images (*.png *.jpg *.jpeg *.tif *.tiff)"
+            self, "Open Image", "", "Images (*.png *.jpg *.jpeg *.tif *.tiff)"
         )
         if not path:
             return
 
-        arr = cv2.imread(path, cv2.IMREAD_UNCHANGED)
+        arr = cv2.imread(path, cv2.IMREAD_COLOR)
         if arr is None:
             QMessageBox.warning(self, "Error", "Could not load image.")
             return
-
-        print("RAW LOAD:", arr.shape, arr.dtype, arr.min(), arr.max())
-
-        # 1) 16-bit → normalize to 0..1
-        if arr.dtype == np.uint16:
-            maxv = float(arr.max()) if arr.max() > 0 else 1.0
-            arr = arr.astype(np.float32) / maxv
-
-        # 2) fake RGB mono → collapse to gray
-        if arr.ndim == 3 and arr.shape[2] == 3:
-            if np.allclose(arr[..., 0], arr[..., 1], atol=1e-6) and \
-               np.allclose(arr[..., 0], arr[..., 2], atol=1e-6):
-                gray = arr[..., 0]
-                arr = np.stack([gray, gray, gray], axis=2)
-
-        # 3) real mono 2D → stack to 3-ch
-        if arr.ndim == 2:
-            m = float(arr.max()) if arr.max() > 0 else 1.0
-            arr = arr.astype(np.float32) / m
-            arr = np.stack([arr, arr, arr], axis=2)
-
-        # 4) normalize to uint8 RGB
-        if arr.max() <= 1.5:
-            arr = (arr * 255.0).clip(0, 255).astype(np.uint8)
-        else:
-            arr = arr.astype(np.uint8)
-
-        # strip alpha
-        if arr.ndim == 3 and arr.shape[2] == 4:
-            arr = arr[..., :3]
 
         arr = cv2.cvtColor(arr, cv2.COLOR_BGR2RGB)
 
         self.base_rgb = arr.copy()
         self.preview.update_image(arr)
-        self.live_updates_enabled = True
+        self.preview.update_histogram()
+
         self.progress_bar.setValue(0)
+        self.live_updates_enabled = True
         self.status_label.setText(f"Loaded: {path}")
 
     # ------------------------------------------------------------
-    # LIVE PREVIEW (DEBOUNCED)
+    def _update_pixel_info(self, x, y, r, g, b):
+        self.status_label.setText(
+            f"X:{x}   Y:{y}   R:{r:.3f}  G:{g:.3f}  B:{b:.3f}"
+        )
+
     # ------------------------------------------------------------
     def _rerun_partial(self):
-        """Called whenever a slider changes; start/restart debounce timer."""
         if not self.live_updates_enabled:
             return
-        self.progress_bar.setValue(0)
         self.status_label.setText("Processing…")
-        self.update_timer.start(300)  # 300 ms debounce
+        self._apply_update()
 
-    def _update_progress(self, percent, text):
-        self.progress_bar.setValue(int(percent))
-        self.status_label.setText(text)
+    def _update_progress(self, pct, txt):
+        self.progress_bar.setValue(int(pct))
+        self.status_label.setText(txt)
 
     def _apply_update(self):
-        """Actually run the pipeline and update preview."""
-        if not self.live_updates_enabled or self.base_rgb is None:
+        if self.base_rgb is None:
             return
+
         proc = self.pipeline.apply_all(self.base_rgb, self._update_progress)
-        out = (proc * 255.0).clip(0, 255).astype(np.uint8)
+        out = (proc * 255).clip(0, 255).astype(np.uint8)
+
         self.preview.update_image(out)
+        self.preview.update_histogram()
         self.status_label.setText("Live update")
 
     # ------------------------------------------------------------
-    # RESET
-    # ------------------------------------------------------------
     def _reset_all(self):
-        if not self.live_updates_enabled:
+        if self.base_rgb is None:
             return
-        self.controls.reset_to_defaults()
-        if self.base_rgb is not None:
-            self.preview.update_image(self.base_rgb)
-        self.progress_bar.setValue(0)
-        self.status_label.setText("Reset")
 
-    # ------------------------------------------------------------
-    # SAVE
+        self.controls.reset_to_defaults()
+        self.preview.update_image(self.base_rgb)
+        self.preview.update_histogram()
+        self.status_label.setText("Reset")
+        self.progress_bar.setValue(0)
+
     # ------------------------------------------------------------
     def _save_result(self):
         if self.base_rgb is None:
-            QMessageBox.warning(self, "Error", "No image loaded.")
             return
 
         path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Save Output",
-            "",
-            "PNG Files (*.png)"
+            self, "Save Output", "", "PNG Files (*.png)"
         )
         if not path:
             return
 
         proc = self.pipeline.apply_all(self.base_rgb, self._update_progress)
-        out = (proc * 255.0).clip(0, 255).astype(np.uint8)
+        out = (proc * 255).clip(0, 255).astype(np.uint8)
         out_bgr = cv2.cvtColor(out, cv2.COLOR_RGB2BGR)
         cv2.imwrite(path, out_bgr)
 
