@@ -6,7 +6,7 @@ from PySide6.QtWidgets import (
     QMainWindow, QWidget, QHBoxLayout, QLabel,
     QFileDialog, QMessageBox, QApplication, QToolBar, QPushButton
 )
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 
 from ui.preview import PreviewWidget
 from ui.controls import ControlsPanel
@@ -18,6 +18,11 @@ class MainWindow(QMainWindow):
         self.pipeline = pipeline
         self.base_rgb = None
         self.live_updates_enabled = False
+
+        # Debounce timer for live updates
+        self.update_timer = QTimer(self)
+        self.update_timer.setSingleShot(True)
+        self.update_timer.timeout.connect(self._apply_update)
 
         self._build_ui()
         self.setWindowTitle("Sharper")
@@ -73,34 +78,25 @@ class MainWindow(QMainWindow):
 
         print("RAW LOAD:", arr.shape, arr.dtype, arr.min(), arr.max())
 
-        # --------------------------------------------------------
         # 1) Handle 16-bit inputs
-        # --------------------------------------------------------
         if arr.dtype == np.uint16:
             maxv = float(arr.max()) if arr.max() > 0 else 1.0
             arr = arr.astype(np.float32) / maxv  # now 0..1
 
-        # --------------------------------------------------------
         # 2) Handle fake RGB mono TIFFs
-        # --------------------------------------------------------
         if arr.ndim == 3 and arr.shape[2] == 3:
             if np.allclose(arr[..., 0], arr[..., 1], atol=1e-6) and \
                np.allclose(arr[..., 0], arr[..., 2], atol=1e-6):
-                # true grayscale disguised as RGB
                 gray = arr[..., 0]
                 arr = np.stack([gray, gray, gray], axis=2)
 
-        # --------------------------------------------------------
         # 3) Convert real grayscale to RGB
-        # --------------------------------------------------------
         if arr.ndim == 2:
             m = float(arr.max()) if arr.max() > 0 else 1.0
             arr = arr.astype(np.float32) / m
             arr = np.stack([arr, arr, arr], axis=2)
 
-        # --------------------------------------------------------
         # 4) Normalize everything to uint8 RGB
-        # --------------------------------------------------------
         if arr.max() <= 1.5:
             arr = (arr * 255.0).clip(0, 255).astype(np.uint8)
         else:
@@ -115,19 +111,26 @@ class MainWindow(QMainWindow):
         self.base_rgb = arr.copy()
         self.preview.update_image(arr)
         self.live_updates_enabled = True
-
         self.status_label.setText(f"Loaded: {path}")
 
     # ------------------------------------------------------------
-    # LIVE PREVIEW
+    # LIVE PREVIEW (DEBOUNCED)
     # ------------------------------------------------------------
     def _rerun_partial(self):
+        """Called whenever a slider changes; start/restart debounce timer."""
+        if not self.live_updates_enabled:
+            return
+        # restart 225 ms timer
+        self.update_timer.start(225)
+
+    def _apply_update(self):
+        """Actually run the pipeline and update preview."""
         if not self.live_updates_enabled or self.base_rgb is None:
             return
-
         proc = self.pipeline.apply_all(self.base_rgb)
         out = (proc * 255.0).clip(0, 255).astype(np.uint8)
         self.preview.update_image(out)
+        self.status_label.setText("Live update")
 
     # ------------------------------------------------------------
     # RESET
@@ -138,6 +141,7 @@ class MainWindow(QMainWindow):
         self.controls.reset_to_defaults()
         if self.base_rgb is not None:
             self.preview.update_image(self.base_rgb)
+        self.status_label.setText("Reset")
 
     # ------------------------------------------------------------
     # SAVE
